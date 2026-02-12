@@ -9,6 +9,10 @@ if (canvas) {
 
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   const colors = ["#f06f9d", "#ff9d3d", "#7a68ff", "#1f9d90", "#f3c846"];
+  const jumpTypes = ["freefall", "tracking", "formation", "wingsuit"];
+  const freefallPoses = ["headup", "headdown", "sit"];
+  const freefallVerticalSpeedMultiplier = 3;
+  const canopyVerticalSpeedMultiplier = 4.5;
 
   let width = 0;
   let height = 0;
@@ -17,15 +21,18 @@ if (canvas) {
   let animationsEnabled = false;
   let clouds = [];
   let skydivers = [];
-  let skydiversLeftInBatch = 0;
+  let pendingSkydiverRun = null;
   let nextSkydiverDropIn = 0;
   let nextSkydiverBatchAtAngle = 0;
+  let skydiverGroupId = 0;
   let swoopers = [];
   let plane = null;
   let nextSwooperIn = 0;
 
   const random = (min, max) => min + Math.random() * (max - min);
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+  const randomInt = (min, max) => Math.floor(random(min, max + 1));
+  const pickRandom = (items) => items[Math.floor(Math.random() * items.length)];
 
   const roundedRectPath = (x, y, widthValue, heightValue, radius) => {
     const r = Math.min(radius, widthValue * 0.5, heightValue * 0.5);
@@ -52,24 +59,142 @@ if (canvas) {
     wobbleStrength: random(6, 18)
   });
 
-  const createSkydiverFromPlane = (planeState) => {
+  const skydiverProfileForJump = (jumpType) => {
+    switch (jumpType) {
+      case "tracking":
+        return {
+          gravity: [18, 29],
+          airDrag: [0.9952, 0.9974],
+          initialFall: [34, 54],
+          glide: [26, 46],
+          drift: [10, 21],
+          canopySink: [19, 30],
+          canopySteer: [30, 49]
+        };
+      case "formation":
+        return {
+          gravity: [21, 34],
+          airDrag: [0.997, 0.999],
+          initialFall: [38, 58],
+          glide: [5, 16],
+          drift: [8, 17],
+          canopySink: [18, 29],
+          canopySteer: [22, 40]
+        };
+      case "wingsuit":
+        return {
+          gravity: [12, 22],
+          airDrag: [0.9934, 0.9962],
+          initialFall: [26, 42],
+          glide: [44, 72],
+          drift: [14, 26],
+          canopySink: [16, 27],
+          canopySteer: [34, 56]
+        };
+      case "freefall":
+      default:
+        return {
+          gravity: [22, 36],
+          airDrag: [0.9964, 0.9988],
+          initialFall: [42, 68],
+          glide: [8, 22],
+          drift: [8, 18],
+          canopySink: [19, 31],
+          canopySteer: [24, 43]
+        };
+    }
+  };
+
+  const createSkydiverGroup = (size) => {
+    return {
+      id: (skydiverGroupId += 1),
+      size,
+      jumpType: pickRandom(jumpTypes),
+      horizontalDirection: Math.random() > 0.5 ? 1 : -1,
+      membersLeft: size,
+      anchorX: null
+    };
+  };
+
+  const createSkydiverRun = () => {
+    let remaining = 4;
+    const groupSizes = [];
+
+    while (remaining > 0) {
+      const nextSize = randomInt(1, remaining);
+      groupSizes.push(nextSize);
+      remaining -= nextSize;
+    }
+
+    // Shuffle so we get more varied run compositions and orderings.
+    for (let i = groupSizes.length - 1; i > 0; i -= 1) {
+      const swapIndex = randomInt(0, i);
+      [groupSizes[i], groupSizes[swapIndex]] = [groupSizes[swapIndex], groupSizes[i]];
+    }
+
+    return {
+      groups: groupSizes.map((size) => createSkydiverGroup(size)),
+      groupIndex: 0
+    };
+  };
+
+  const createSkydiverFromPlane = (planeState, group, memberIndex) => {
+    const profile = skydiverProfileForJump(group.jumpType);
     const headingCos = Math.cos(planeState.heading);
     const headingSin = Math.sin(planeState.heading);
+    const slot = group.size > 1 ? memberIndex - (group.size - 1) * 0.5 : 0;
+    const slotBase = Math.max((group.size - 1) * 0.5, 0.5);
+    const slotNormalized = group.size > 1 ? slot / slotBase : 0;
     const localX = -planeState.size * random(0.45, 0.9);
-    const localY = planeState.size * random(0.16, 0.55);
-    const x = planeState.x + localX * headingCos - localY * headingSin;
-    const y = planeState.y + localX * headingSin + localY * headingCos;
+    const localY = planeState.size * random(0.16, 0.55) + slot * planeState.size * 0.1;
+    const spawnJitter = random(-planeState.size * 0.07, planeState.size * 0.07);
+    const x =
+      planeState.x + localX * headingCos - localY * headingSin + spawnJitter * headingCos;
+    const y =
+      planeState.y + localX * headingSin + localY * headingCos + spawnJitter * headingSin;
+
+    if (typeof group.anchorX !== "number") {
+      group.anchorX = x;
+    }
 
     return {
       x,
       y,
-      vx: planeState.vx * 0.32 + random(-14, 14),
-      vy: planeState.vy * 0.2 + random(42, 70),
-      gravity: random(22, 40),
-      drift: random(8, 22),
+      vx:
+        planeState.vx * 0.28 +
+        random(-8, 8) +
+        group.horizontalDirection * random(profile.glide[0], profile.glide[1]) * 0.12,
+      vy: planeState.vy * 0.2 + random(profile.initialFall[0], profile.initialFall[1]),
+      gravity: random(profile.gravity[0], profile.gravity[1]),
+      airDrag: random(profile.airDrag[0], profile.airDrag[1]),
+      glideStrength: random(profile.glide[0], profile.glide[1]),
+      glideDirection: group.horizontalDirection,
+      glideOffset: random(0, Math.PI * 2),
+      drift: random(profile.drift[0], profile.drift[1]),
       driftOffset: random(0, Math.PI * 2),
-      size: random(14, 22),
-      color: colors[Math.floor(Math.random() * colors.length)]
+      size: random(13, 20),
+      color: pickRandom(colors),
+      canopyColor: pickRandom(colors),
+      jumpType: group.jumpType,
+      freefallPose: group.jumpType === "freefall" ? pickRandom(freefallPoses) : null,
+      groupId: group.id,
+      groupSize: group.size,
+      groupAnchorX: group.anchorX,
+      separationOffsetX: slotNormalized * random(62, 112),
+      separationOffsetY: random(-18, 22),
+      separationBurstX:
+        slotNormalized === 0
+          ? random(-12, 12)
+          : Math.sign(slotNormalized) * random(20, 46),
+      hasSeparated: false,
+      deployAtY: height * (2 / 3),
+      canopyDeployed: false,
+      canopyInflation: 0,
+      canopySink: random(profile.canopySink[0], profile.canopySink[1]),
+      canopySteer: random(profile.canopySteer[0], profile.canopySteer[1]),
+      canopyDrag: random(0.88, 0.93),
+      canopyTurnOffset: random(0, Math.PI * 2),
+      age: 0
     };
   };
 
@@ -83,7 +208,7 @@ if (canvas) {
       x: fromLeft ? -90 : width + 90,
       y: startY,
       direction,
-      speed: random(290, 430),
+      speed: random(290, 430) * 1.5,
       sink: random(8, 24),
       sway: random(8, 22),
       swayOffset: random(0, Math.PI * 2),
@@ -96,13 +221,13 @@ if (canvas) {
 
   const createPlane = () => {
     const angle = random(0, Math.PI * 2);
-    const radiusX = Math.max(150, width * 0.34);
-    const radiusY = Math.max(44, height * 0.1);
+    const radiusX = Math.max(180, width * 0.4);
+    const radiusY = Math.max(22, height * 0.07);
     const centerX = width * 0.5;
     const centerY = Math.max(72, height * 0.2);
     const size = clamp(width * 0.015, 10, 18);
-    const x = centerX + Math.cos(angle) * radiusX;
-    const y = centerY + Math.sin(angle) * radiusY;
+    const x = centerX + Math.sin(angle) * radiusX;
+    const y = centerY + Math.sin(angle * 2) * radiusY * 0.42;
 
     return {
       x,
@@ -110,12 +235,15 @@ if (canvas) {
       vx: 0,
       vy: 0,
       angle,
-      orbitSpeed: random(0.17, 0.24),
+      orbitSpeed: random(0.2, 0.28),
       radiusX,
       radiusY,
       centerX,
       centerY,
       size,
+      direction: Math.cos(angle) >= 0 ? 1 : -1,
+      pitch: 0,
+      bank: 0,
       heading: 0,
       tangentSpeed: 0
     };
@@ -137,7 +265,8 @@ if (canvas) {
 
     clouds = Array.from({ length: cloudCount }, () => createCloud());
     skydivers = [];
-    skydiversLeftInBatch = 4;
+    skydiverGroupId = 0;
+    pendingSkydiverRun = createSkydiverRun();
     nextSkydiverDropIn = random(0.35, 0.8);
     swoopers = [];
     plane = createPlane();
@@ -192,8 +321,8 @@ if (canvas) {
     }
 
     const nextAngle = plane.angle + plane.orbitSpeed * deltaSeconds;
-    const nextX = plane.centerX + Math.cos(nextAngle) * plane.radiusX;
-    const nextY = plane.centerY + Math.sin(nextAngle) * plane.radiusY;
+    const nextX = plane.centerX + Math.sin(nextAngle) * plane.radiusX;
+    const nextY = plane.centerY + Math.sin(nextAngle * 2) * plane.radiusY * 0.42;
 
     if (deltaSeconds > 0) {
       plane.vx = (nextX - plane.x) / deltaSeconds;
@@ -206,7 +335,18 @@ if (canvas) {
     plane.tangentSpeed = Math.hypot(plane.vx, plane.vy);
 
     if (plane.tangentSpeed > 1) {
-      plane.heading = Math.atan2(plane.vy, plane.vx);
+      if (Math.abs(plane.vx) > 6) {
+        plane.direction = plane.vx >= 0 ? 1 : -1;
+      }
+
+      const pitchTarget = clamp(Math.atan2(plane.vy, Math.abs(plane.vx) + 0.001), -0.34, 0.34);
+      const pitchLerp = Math.min(1, deltaSeconds * 5.8);
+      plane.pitch += (pitchTarget - plane.pitch) * pitchLerp;
+      plane.heading = plane.direction === 1 ? plane.pitch : Math.PI - plane.pitch;
+
+      const bankTarget = clamp(-Math.sin(nextAngle) * 0.34, -0.34, 0.34);
+      const bankLerp = Math.min(1, deltaSeconds * 3.4);
+      plane.bank += (bankTarget - plane.bank) * bankLerp;
     }
   };
 
@@ -217,113 +357,381 @@ if (canvas) {
 
     const s = plane.size;
     const propPulse = 0.65 + Math.sin(elapsed * 0.03) * 0.35;
-    const bank = Math.sin(plane.angle) * 0.18;
+    const bank = plane.bank || 0;
+    const fuselageX = -s * 2.35;
+    const fuselageY = -s * 0.34;
+    const fuselageW = s * 4.7;
+    const fuselageH = s * 0.68;
+    const propHubX = fuselageX + fuselageW + s * 0.02;
 
     ctx.save();
     ctx.translate(plane.x, plane.y);
-    ctx.rotate(plane.heading + bank);
+    ctx.rotate((plane.pitch || 0) + bank);
+    ctx.scale(plane.direction || 1, 1);
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
     ctx.fillStyle = "rgba(0, 0, 0, 0.12)";
     ctx.beginPath();
-    ctx.ellipse(-s * 0.1, s * 0.32, s * 2.1, s * 0.45, 0, 0, Math.PI * 2);
+    ctx.ellipse(-s * 0.1, s * 0.56, s * 2.55, s * 0.4, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = "#c11423";
-    roundedRectPath(-s * 2.2, -s * 0.26, s * 3.95, s * 0.52, s * 0.22);
+    // Cessna-182-like profile with high wing and fixed tricycle gear.
+    ctx.fillStyle = "#c7212f";
+    roundedRectPath(fuselageX, fuselageY, fuselageW, fuselageH, s * 0.28);
     ctx.fill();
 
-    ctx.fillStyle = "#f4c319";
-    roundedRectPath(-s * 0.7, -s * 1.03, s * 1.25, s * 2.06, s * 0.22);
+    ctx.fillStyle = "#f6ca3b";
+    roundedRectPath(-s * 2.04, -s * 0.04, s * 3.96, s * 0.18, s * 0.08);
     ctx.fill();
 
-    roundedRectPath(-s * 2.2, -s * 0.88, s * 0.68, s * 0.52, s * 0.14);
+    ctx.fillStyle = "#f4b426";
+    roundedRectPath(-s * 0.7, -s * 0.84, s * 1.62, s * 0.54, s * 0.14);
     ctx.fill();
 
-    roundedRectPath(-s * 2.22, -s * 0.38, s * 0.95, s * 0.18, s * 0.09);
+    ctx.fillStyle = "#f6ca3b";
+    roundedRectPath(-s * 1.26, -s * 1.08, s * 2.65, s * 0.25, s * 0.1);
     ctx.fill();
 
-    ctx.fillStyle = "#f4c319";
-    roundedRectPath(-s * 1.95, -s * 0.06, s * 2.45, s * 0.12, s * 0.06);
+    ctx.fillStyle = "#c7212f";
+    roundedRectPath(-s * 1.0, -s * 0.99, s * 2.08, s * 0.08, s * 0.03);
     ctx.fill();
 
-    ctx.fillStyle = "rgba(11, 17, 22, 0.55)";
-    roundedRectPath(-s * 0.42, -s * 0.2, s * 1.02, s * 0.4, s * 0.12);
+    ctx.fillStyle = "#f6ca3b";
+    roundedRectPath(-s * 2.16, -s * 0.56, s * 0.53, s * 0.22, s * 0.08);
+    ctx.fill();
+    roundedRectPath(-s * 2.08, -s * 0.44, s * 0.92, s * 0.12, s * 0.06);
     ctx.fill();
 
-    ctx.strokeStyle = "rgba(22, 25, 29, 0.72)";
-    ctx.lineWidth = Math.max(1, s * 0.1);
+    ctx.fillStyle = "rgba(17, 26, 38, 0.62)";
+    roundedRectPath(-s * 0.52, -s * 0.76, s * 1.44, s * 0.34, s * 0.1);
+    ctx.fill();
+
+    ctx.fillStyle = "#f3f6fa";
     ctx.beginPath();
-    ctx.moveTo(-s * 0.22, s * 0.27);
-    ctx.lineTo(-s * 0.06, s * 0.56);
-    ctx.moveTo(s * 0.46, s * 0.27);
-    ctx.lineTo(s * 0.58, s * 0.56);
-    ctx.moveTo(-s * 0.18, s * 0.56);
-    ctx.lineTo(s * 0.64, s * 0.56);
+    ctx.moveTo(fuselageX + fuselageW - s * 0.03, fuselageY + s * 0.12);
+    ctx.lineTo(fuselageX + fuselageW + s * 0.17, fuselageY + s * 0.2);
+    ctx.lineTo(fuselageX + fuselageW + s * 0.17, fuselageY + fuselageH - s * 0.2);
+    ctx.lineTo(fuselageX + fuselageW - s * 0.03, fuselageY + fuselageH - s * 0.12);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(26, 38, 53, 0.68)";
+    ctx.lineWidth = Math.max(1, s * 0.09);
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.64, -s * 0.84);
+    ctx.lineTo(-s * 0.34, s * 0.16);
+    ctx.moveTo(s * 0.76, -s * 0.84);
+    ctx.lineTo(s * 0.58, s * 0.19);
+    ctx.moveTo(-s * 0.22, s * 0.22);
+    ctx.lineTo(-s * 0.4, s * 0.66);
+    ctx.moveTo(s * 0.52, s * 0.2);
+    ctx.lineTo(s * 0.68, s * 0.66);
+    ctx.moveTo(s * 1.56, s * 0.12);
+    ctx.lineTo(s * 1.7, s * 0.62);
     ctx.stroke();
 
-    const propX = s * 1.74;
-    ctx.strokeStyle = `rgba(224, 231, 240, ${0.28 + propPulse * 0.28})`;
-    ctx.lineWidth = Math.max(1, s * 0.1);
+    ctx.fillStyle = "rgba(24, 31, 40, 0.92)";
     ctx.beginPath();
-    ctx.moveTo(propX, -s * 0.46);
-    ctx.lineTo(propX, s * 0.46);
+    ctx.arc(-s * 0.42, s * 0.67, s * 0.13, 0, Math.PI * 2);
+    ctx.arc(s * 0.7, s * 0.67, s * 0.13, 0, Math.PI * 2);
+    ctx.arc(s * 1.72, s * 0.64, s * 0.11, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "#d8dde6";
+    ctx.beginPath();
+    ctx.arc(propHubX, 0, s * 0.1, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = `rgba(224, 231, 240, ${0.28 + propPulse * 0.28})`;
+    ctx.lineWidth = Math.max(1, s * 0.12);
+    ctx.beginPath();
+    ctx.moveTo(propHubX, -s * 0.64);
+    ctx.lineTo(propHubX, s * 0.64);
     ctx.stroke();
 
     ctx.strokeStyle = `rgba(224, 231, 240, ${0.14 + propPulse * 0.22})`;
     ctx.lineWidth = Math.max(1, s * 0.06);
     ctx.beginPath();
-    ctx.moveTo(propX + s * 0.1, -s * 0.52);
-    ctx.lineTo(propX + s * 0.1, s * 0.52);
+    ctx.moveTo(propHubX + s * 0.1, -s * 0.58);
+    ctx.lineTo(propHubX + s * 0.1, s * 0.58);
     ctx.stroke();
 
     ctx.restore();
   };
 
-  const drawSkydiver = (skydiver, elapsed) => {
-    const sway = Math.sin(elapsed * 0.0012 + skydiver.driftOffset) * skydiver.drift;
+  const drawBodyPose = (x, y, size, color, pose) => {
+    const rotation = pose.rotation || 0;
+    const armSpan = pose.armSpan ?? 0.72;
+    const armDrop = pose.armDrop ?? 0.26;
+    const legSpan = pose.legSpan ?? 0.34;
+    const legDrop = pose.legDrop ?? 0.52;
+    const torsoLength = pose.torsoLength ?? 1;
+    const bentLegs = pose.bentLegs ?? 0;
+    const wingSpan = pose.wingSpan ?? 0;
+
+    const torsoTop = -size * 0.56;
+    const torsoHeight = size * torsoLength;
+    const torsoBottom = torsoTop + torsoHeight;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rotation);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    ctx.fillStyle = color;
+    roundedRectPath(-size * 0.18, torsoTop, size * 0.36, torsoHeight, size * 0.11);
+    ctx.fill();
+
+    if (wingSpan > 0) {
+      ctx.fillStyle = "rgba(255, 255, 255, 0.24)";
+      ctx.beginPath();
+      ctx.moveTo(-size * 0.17, torsoTop + size * 0.18);
+      ctx.lineTo(-size * wingSpan, torsoTop + size * 0.52);
+      ctx.lineTo(-size * 0.13, torsoBottom - size * 0.08);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(size * 0.17, torsoTop + size * 0.18);
+      ctx.lineTo(size * wingSpan, torsoTop + size * 0.52);
+      ctx.lineTo(size * 0.13, torsoBottom - size * 0.08);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    ctx.strokeStyle = "rgba(16, 35, 27, 0.66)";
+    ctx.lineWidth = Math.max(1.1, size * 0.095);
+    ctx.beginPath();
+    ctx.moveTo(-size * 0.12, torsoTop + size * 0.2);
+    ctx.lineTo(-size * armSpan, torsoTop + size * armDrop);
+    ctx.moveTo(size * 0.12, torsoTop + size * 0.2);
+    ctx.lineTo(size * armSpan, torsoTop + size * armDrop);
+
+    if (bentLegs > 0) {
+      const kneeY = torsoBottom + size * legDrop * 0.42;
+      ctx.moveTo(-size * 0.08, torsoBottom);
+      ctx.lineTo(-size * legSpan * 0.48, kneeY);
+      ctx.lineTo(-size * legSpan, torsoBottom + size * legDrop - size * bentLegs * 0.18);
+      ctx.moveTo(size * 0.08, torsoBottom);
+      ctx.lineTo(size * legSpan * 0.48, kneeY);
+      ctx.lineTo(size * legSpan, torsoBottom + size * legDrop - size * bentLegs * 0.18);
+    } else {
+      ctx.moveTo(-size * 0.08, torsoBottom);
+      ctx.lineTo(-size * legSpan, torsoBottom + size * legDrop);
+      ctx.moveTo(size * 0.08, torsoBottom);
+      ctx.lineTo(size * legSpan, torsoBottom + size * legDrop);
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(16, 35, 27, 0.86)";
+    ctx.beginPath();
+    ctx.arc(0, torsoTop - size * 0.22, size * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  };
+
+  const drawSkydiverUnderCanopy = (skydiver, elapsed) => {
+    const sway = Math.sin(elapsed * 0.001 + skydiver.driftOffset) * skydiver.drift * 0.42;
     const x = skydiver.x + sway;
     const y = skydiver.y;
     const size = skydiver.size;
+    const inflation = skydiver.canopyInflation;
+    const canopyWidth = size * (2.4 + inflation * 2.5);
+    const canopyHeight = size * (0.5 + inflation * 1.1);
+    const canopyY = y - size * (2.1 + inflation * 1.25);
 
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
-    ctx.strokeStyle = "rgba(16, 35, 27, 0.62)";
-    ctx.lineWidth = Math.max(1.1, size * 0.09);
+    const harnessY = y - size * 0.44;
+    const lines = [-0.42, -0.16, 0.16, 0.42];
+    ctx.strokeStyle = "rgba(16, 35, 27, 0.42)";
+    ctx.lineWidth = Math.max(0.75, size * 0.065);
+    for (const ratio of lines) {
+      ctx.beginPath();
+      ctx.moveTo(x + size * ratio * 0.56, harnessY);
+      ctx.lineTo(x + canopyWidth * ratio, canopyY + canopyHeight * 0.36);
+      ctx.stroke();
+    }
 
-    ctx.fillStyle = skydiver.color;
+    const canopyGradient = ctx.createLinearGradient(
+      x,
+      canopyY - canopyHeight,
+      x,
+      canopyY + canopyHeight * 0.7
+    );
+    canopyGradient.addColorStop(0, "rgba(255, 255, 255, 0.54)");
+    canopyGradient.addColorStop(0.3, skydiver.canopyColor);
+    canopyGradient.addColorStop(1, "rgba(16, 35, 27, 0.34)");
+
+    ctx.fillStyle = canopyGradient;
     ctx.beginPath();
-    ctx.ellipse(x, y - size * 0.95, size * 1.3, size * 0.58, 0, Math.PI, 0, true);
+    ctx.moveTo(x - canopyWidth * 0.5, canopyY);
+    ctx.quadraticCurveTo(x, canopyY - canopyHeight, x + canopyWidth * 0.5, canopyY);
+    ctx.lineTo(x + canopyWidth * 0.42, canopyY + canopyHeight * 0.36);
+    ctx.quadraticCurveTo(x, canopyY + canopyHeight * 0.58, x - canopyWidth * 0.42, canopyY + canopyHeight * 0.36);
+    ctx.closePath();
     ctx.fill();
 
-    ctx.beginPath();
-    ctx.moveTo(x - size * 0.82, y - size * 0.95);
-    ctx.lineTo(x - size * 0.18, y - size * 0.28);
-    ctx.moveTo(x + size * 0.82, y - size * 0.95);
-    ctx.lineTo(x + size * 0.18, y - size * 0.28);
-    ctx.stroke();
-
-    ctx.fillStyle = "rgba(16, 35, 27, 0.84)";
-    ctx.beginPath();
-    ctx.arc(x, y - size * 0.08, size * 0.18, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.moveTo(x, y + size * 0.06);
-    ctx.lineTo(x, y + size * 0.56);
-    ctx.moveTo(x, y + size * 0.26);
-    ctx.lineTo(x - size * 0.34, y + size * 0.44);
-    ctx.moveTo(x, y + size * 0.26);
-    ctx.lineTo(x + size * 0.34, y + size * 0.44);
-    ctx.moveTo(x, y + size * 0.56);
-    ctx.lineTo(x - size * 0.3, y + size * 0.95);
-    ctx.moveTo(x, y + size * 0.56);
-    ctx.lineTo(x + size * 0.3, y + size * 0.95);
-    ctx.stroke();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.36)";
+    ctx.lineWidth = Math.max(0.45, size * 0.05);
+    for (let i = -2; i <= 2; i += 1) {
+      const cellRatio = i / 5;
+      const cellX = x + canopyWidth * cellRatio;
+      ctx.beginPath();
+      ctx.moveTo(cellX, canopyY + canopyHeight * 0.06);
+      ctx.lineTo(x + canopyWidth * cellRatio * 0.92, canopyY + canopyHeight * 0.46);
+      ctx.stroke();
+    }
     ctx.restore();
+
+    drawBodyPose(x, y, size * 0.95, skydiver.color, {
+      rotation: Math.sin(elapsed * 0.0017 + skydiver.canopyTurnOffset) * 0.05,
+      armSpan: 0.44,
+      armDrop: 0.24,
+      legSpan: 0.26,
+      legDrop: 0.52,
+      torsoLength: 0.92
+    });
+  };
+
+  const drawSkydiver = (skydiver, elapsed) => {
+    if (skydiver.canopyDeployed) {
+      drawSkydiverUnderCanopy(skydiver, elapsed);
+      return;
+    }
+
+    const sway = Math.sin(elapsed * 0.0012 + skydiver.driftOffset) * skydiver.drift;
+    const x = skydiver.x + sway;
+    const y = skydiver.y;
+    const size = skydiver.size;
+    const wobble = Math.sin(elapsed * 0.004 + skydiver.glideOffset) * 0.07;
+
+    if (skydiver.jumpType === "freefall") {
+      if (skydiver.freefallPose === "headdown") {
+        drawBodyPose(x, y, size, skydiver.color, {
+          rotation: Math.PI + wobble,
+          armSpan: 0.58,
+          armDrop: 0.24,
+          legSpan: 0.27,
+          legDrop: 0.42,
+          torsoLength: 1
+        });
+        return;
+      }
+
+      if (skydiver.freefallPose === "sit") {
+        drawBodyPose(x, y, size, skydiver.color, {
+          rotation: wobble * 0.5,
+          armSpan: 0.64,
+          armDrop: 0.24,
+          legSpan: 0.6,
+          legDrop: 0.38,
+          torsoLength: 0.94,
+          bentLegs: 0.95
+        });
+        return;
+      }
+
+      drawBodyPose(x, y, size, skydiver.color, {
+        rotation: wobble,
+        armSpan: 0.74,
+        armDrop: 0.26,
+        legSpan: 0.34,
+        legDrop: 0.52,
+        torsoLength: 1
+      });
+      return;
+    }
+
+    if (skydiver.jumpType === "tracking") {
+      drawBodyPose(x, y, size, skydiver.color, {
+        rotation: skydiver.glideDirection * 0.55 + wobble * 0.4,
+        armSpan: 0.9,
+        armDrop: 0.22,
+        legSpan: 0.7,
+        legDrop: 0.58,
+        torsoLength: 0.95
+      });
+      return;
+    }
+
+    if (skydiver.jumpType === "formation") {
+      drawBodyPose(x, y, size, skydiver.color, {
+        rotation: wobble * 0.35,
+        armSpan: 1.02,
+        armDrop: 0.14,
+        legSpan: 0.84,
+        legDrop: 0.56,
+        torsoLength: 0.95
+      });
+      return;
+    }
+
+    drawBodyPose(x, y, size, skydiver.color, {
+      rotation: skydiver.glideDirection * 0.26 + wobble * 0.45,
+      armSpan: 1.08,
+      armDrop: 0.12,
+      legSpan: 0.58,
+      legDrop: 0.62,
+      torsoLength: 1.06,
+      wingSpan: 1.04
+    });
+  };
+
+  const deployCanopy = (skydiver) => {
+    skydiver.canopyDeployed = true;
+    skydiver.canopyInflation = 0.03;
+    skydiver.vx *= 0.74;
+    skydiver.vy = Math.min(skydiver.vy, random(44, 62));
+  };
+
+  const updateSkydiver = (skydiver, deltaSeconds, elapsed) => {
+    skydiver.age += deltaSeconds;
+
+    if (!skydiver.canopyDeployed) {
+      const splitLineY = height * 0.5;
+
+      if (skydiver.groupSize > 1 && !skydiver.hasSeparated && skydiver.y >= splitLineY) {
+        skydiver.hasSeparated = true;
+        skydiver.vx += skydiver.separationBurstX + skydiver.separationOffsetX * 0.32;
+        skydiver.vy += skydiver.separationOffsetY * 0.16;
+      }
+
+      if (skydiver.groupSize > 1) {
+        const targetX = skydiver.hasSeparated
+          ? skydiver.groupAnchorX + skydiver.separationOffsetX
+          : skydiver.groupAnchorX + skydiver.separationOffsetX * 0.12;
+        const correction = clamp(targetX - skydiver.x, -72, 72);
+        skydiver.vx += correction * deltaSeconds * (skydiver.hasSeparated ? 0.62 : 1.05);
+      }
+
+      const glideWave = Math.sin(elapsed * 0.0018 + skydiver.glideOffset) * 0.55 + 0.45;
+      skydiver.vx += skydiver.glideStrength * skydiver.glideDirection * glideWave * deltaSeconds;
+      skydiver.vy += skydiver.gravity * deltaSeconds;
+      skydiver.vx *= skydiver.airDrag;
+      skydiver.x += skydiver.vx * deltaSeconds;
+      skydiver.y += skydiver.vy * deltaSeconds * freefallVerticalSpeedMultiplier;
+
+      if (skydiver.y >= skydiver.deployAtY) {
+        deployCanopy(skydiver);
+      }
+
+      return;
+    }
+
+    skydiver.canopyInflation = Math.min(1, skydiver.canopyInflation + deltaSeconds * 2.1);
+    const canopyTurn = Math.sin(elapsed * 0.0014 + skydiver.canopyTurnOffset);
+    skydiver.vx += canopyTurn * skydiver.canopySteer * deltaSeconds;
+    skydiver.vy += skydiver.canopySink * deltaSeconds * 0.22;
+    skydiver.vx *= 0.94;
+    skydiver.vy *= skydiver.canopyDrag - skydiver.canopyInflation * 0.05;
+    skydiver.vy = clamp(skydiver.vy, 24, 92);
+    skydiver.x += skydiver.vx * deltaSeconds;
+    skydiver.y += skydiver.vy * deltaSeconds * canopyVerticalSpeedMultiplier;
   };
 
   const drawSwooper = (swooper, elapsed) => {
@@ -399,31 +807,111 @@ if (canvas) {
       ctx.stroke();
     }
 
-    ctx.strokeStyle = "rgba(16, 35, 27, 0.72)";
-    ctx.lineWidth = Math.max(1.2, size * 0.1);
+    const canopyWidth = size * 4.4;
+    const canopyDepth = size * 0.95;
+    const canopyTopY = -size * 2.15;
+    const canopyBottomY = canopyTopY + canopyDepth;
+    const canopyArcY = canopyTopY - canopyDepth * 0.55;
+    const bodyOffsetY = size * 1.45;
+    const riserY = -size * 0.5 + bodyOffsetY;
 
-    ctx.fillStyle = swooper.color;
+    ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
     ctx.beginPath();
-    ctx.ellipse(0, -size * 0.92, size * 1.8, size * 0.46, 0, Math.PI, 0, true);
+    ctx.ellipse(0, canopyBottomY + size * 0.38, canopyWidth * 0.42, size * 0.22, 0, 0, Math.PI * 2);
     ctx.fill();
 
+    const canopyGradient = ctx.createLinearGradient(0, canopyArcY, 0, canopyBottomY + size * 0.55);
+    canopyGradient.addColorStop(0, "rgba(255, 255, 255, 0.62)");
+    canopyGradient.addColorStop(0.3, swooper.color);
+    canopyGradient.addColorStop(1, "rgba(17, 26, 36, 0.82)");
+    ctx.fillStyle = canopyGradient;
     ctx.beginPath();
-    ctx.moveTo(-size * 0.98, -size * 0.9);
-    ctx.lineTo(-size * 0.35, -size * 0.16);
-    ctx.moveTo(size * 0.98, -size * 0.9);
-    ctx.lineTo(size * 0.35, -size * 0.16);
+    ctx.moveTo(-canopyWidth * 0.5, canopyBottomY);
+    ctx.quadraticCurveTo(0, canopyArcY, canopyWidth * 0.5, canopyBottomY);
+    ctx.lineTo(canopyWidth * 0.44, canopyBottomY + size * 0.34);
+    ctx.quadraticCurveTo(0, canopyBottomY + size * 0.62, -canopyWidth * 0.44, canopyBottomY + size * 0.34);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(22, 28, 34, 0.58)";
+    ctx.lineWidth = Math.max(1.05, size * 0.085);
+    ctx.beginPath();
+    ctx.moveTo(-canopyWidth * 0.5, canopyBottomY);
+    ctx.quadraticCurveTo(0, canopyArcY, canopyWidth * 0.5, canopyBottomY);
     ctx.stroke();
 
-    ctx.fillStyle = "rgba(16, 35, 27, 0.88)";
-    ctx.beginPath();
-    ctx.arc(size * 0.14, -size * 0.06, size * 0.18, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.42)";
+    ctx.lineWidth = Math.max(0.65, size * 0.055);
+    for (let i = -3; i <= 3; i += 1) {
+      const ratio = i / 6;
+      ctx.beginPath();
+      ctx.moveTo(canopyWidth * ratio, canopyBottomY + size * 0.06);
+      ctx.lineTo(canopyWidth * ratio * 0.9, canopyBottomY + size * 0.44);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = "rgba(16, 20, 26, 0.54)";
+    ctx.lineWidth = Math.max(0.75, size * 0.06);
+    const lineRatios = [-0.42, -0.2, 0.2, 0.42];
+    for (const ratio of lineRatios) {
+      ctx.beginPath();
+      ctx.moveTo(size * ratio * 0.7, riserY);
+      ctx.lineTo(canopyWidth * ratio, canopyBottomY + size * 0.3);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = "rgba(35, 46, 60, 0.96)";
+    roundedRectPath(
+      -size * 0.16,
+      -size * 0.62 + bodyOffsetY,
+      size * 0.32,
+      size * 0.75,
+      size * 0.12
+    );
     ctx.fill();
 
+    ctx.strokeStyle = "rgba(228, 234, 240, 0.56)";
+    ctx.lineWidth = Math.max(0.75, size * 0.06);
     ctx.beginPath();
-    ctx.moveTo(size * 0.02, size * 0.05);
-    ctx.lineTo(size * 0.82, size * 0.18);
-    ctx.moveTo(size * 0.34, size * 0.12);
-    ctx.lineTo(size * 0.58, size * 0.54);
+    ctx.moveTo(-size * 0.11, -size * 0.52 + bodyOffsetY);
+    ctx.lineTo(-size * 0.02, size * 0.08 + bodyOffsetY);
+    ctx.moveTo(size * 0.11, -size * 0.52 + bodyOffsetY);
+    ctx.lineTo(size * 0.02, size * 0.08 + bodyOffsetY);
+    ctx.stroke();
+
+    ctx.strokeStyle = "rgba(15, 21, 29, 0.82)";
+    ctx.lineWidth = Math.max(1, size * 0.09);
+    const armAngleFromUp = (20 * Math.PI) / 180;
+    const armLength = size * 0.52;
+    const armDx = Math.sin(armAngleFromUp) * armLength;
+    const armDy = Math.cos(armAngleFromUp) * armLength;
+    const leftShoulderX = -size * 0.13;
+    const rightShoulderX = size * 0.13;
+    const shoulderY = -size * 0.28 + bodyOffsetY;
+    ctx.beginPath();
+    ctx.moveTo(leftShoulderX, shoulderY);
+    ctx.lineTo(leftShoulderX - armDx, shoulderY - armDy);
+    ctx.moveTo(rightShoulderX, shoulderY);
+    ctx.lineTo(rightShoulderX + armDx, shoulderY - armDy);
+    ctx.moveTo(-size * 0.06, size * 0.12 + bodyOffsetY);
+    ctx.lineTo(-size * 0.34, size * 0.66 + bodyOffsetY);
+    ctx.moveTo(size * 0.06, size * 0.12 + bodyOffsetY);
+    ctx.lineTo(size * 0.37, size * 0.62 + bodyOffsetY);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(30, 39, 50, 0.95)";
+    ctx.beginPath();
+    ctx.arc(0, -size * 0.87 + bodyOffsetY, size * 0.24, 0, Math.PI * 2);
+    ctx.fill();
+
+    const faceY = -size * 0.87 + bodyOffsetY;
+    ctx.strokeStyle = "rgba(230, 236, 244, 0.42)";
+    ctx.lineWidth = Math.max(0.55, size * 0.045);
+    ctx.beginPath();
+    ctx.moveTo(-size * 0.08, faceY - size * 0.08);
+    ctx.lineTo(size * 0.1, faceY - size * 0.03);
+    ctx.moveTo(-size * 0.06, faceY + size * 0.08);
+    ctx.lineTo(size * 0.06, faceY + size * 0.08);
     ctx.stroke();
     ctx.restore();
   };
@@ -453,40 +941,55 @@ if (canvas) {
     updatePlane(deltaSeconds);
     drawPlane(timestamp);
 
-    if (plane && skydiversLeftInBatch <= 0 && plane.angle >= nextSkydiverBatchAtAngle) {
-      skydiversLeftInBatch = 4;
-      nextSkydiverDropIn = random(0.16, 0.7);
+    if (plane && !pendingSkydiverRun && plane.angle >= nextSkydiverBatchAtAngle) {
+      pendingSkydiverRun = createSkydiverRun();
+      nextSkydiverDropIn = random(0.16, 0.62);
     }
 
-    if (skydiversLeftInBatch > 0) {
-      nextSkydiverDropIn -= deltaSeconds;
-      if (nextSkydiverDropIn <= 0) {
-        if (plane && skydivers.length < 24) {
-          skydivers.push(createSkydiverFromPlane(plane));
-          skydiversLeftInBatch -= 1;
-          nextSkydiverDropIn = random(0.18, 0.65);
+    if (pendingSkydiverRun) {
+      const currentGroup = pendingSkydiverRun.groups[pendingSkydiverRun.groupIndex];
 
-          if (skydiversLeftInBatch <= 0) {
-            scheduleNextSkydiverBatch();
+      if (!currentGroup) {
+        pendingSkydiverRun = null;
+        scheduleNextSkydiverBatch();
+      } else {
+        nextSkydiverDropIn -= deltaSeconds;
+        if (nextSkydiverDropIn <= 0) {
+          if (plane && skydivers.length < 28) {
+            const memberIndex = currentGroup.size - currentGroup.membersLeft;
+            skydivers.push(createSkydiverFromPlane(plane, currentGroup, memberIndex));
+            currentGroup.membersLeft -= 1;
+
+            if (currentGroup.membersLeft <= 0) {
+              pendingSkydiverRun.groupIndex += 1;
+              const hasMoreGroups = pendingSkydiverRun.groupIndex < pendingSkydiverRun.groups.length;
+
+              if (hasMoreGroups) {
+                // For runs split into multiple groups, wait at least 3 seconds before the next group.
+                nextSkydiverDropIn = random(3, 4.8);
+              } else {
+                pendingSkydiverRun = null;
+                scheduleNextSkydiverBatch();
+              }
+            } else {
+              nextSkydiverDropIn = random(0.1, 0.28);
+            }
+          } else {
+            nextSkydiverDropIn = 0.3;
           }
-        } else {
-          nextSkydiverDropIn = 0.35;
         }
       }
     }
 
     for (let i = skydivers.length - 1; i >= 0; i -= 1) {
       const skydiver = skydivers[i];
-      skydiver.vy += skydiver.gravity * deltaSeconds;
-      skydiver.vx *= 0.998;
-      skydiver.x += skydiver.vx * deltaSeconds;
-      skydiver.y += skydiver.vy * deltaSeconds;
-
+      updateSkydiver(skydiver, deltaSeconds, timestamp);
       drawSkydiver(skydiver, timestamp);
 
-      const outBottom = skydiver.y - skydiver.size > height + 22;
-      const outLeft = skydiver.x + skydiver.size < -30;
-      const outRight = skydiver.x - skydiver.size > width + 30;
+      const horizontalSize = skydiver.canopyDeployed ? skydiver.size * 3.4 : skydiver.size;
+      const outBottom = skydiver.y - skydiver.size > height + 64;
+      const outLeft = skydiver.x + horizontalSize < -60;
+      const outRight = skydiver.x - horizontalSize > width + 60;
       if (outBottom || outLeft || outRight) {
         skydivers.splice(i, 1);
       }
