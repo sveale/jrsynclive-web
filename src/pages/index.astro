@@ -5,6 +5,8 @@ const redisUrl =
 const redisToken =
   import.meta.env.PUBLIC_UPSTASH_REDIS_REST_TOKEN ??
   "AtChAAIgcDLqnWMVtD9nt_1H9DZ-SZFzmC5Ttv8QZVnOkZ3HXvWMHQ";
+const assetVersion =
+  import.meta.env.PUBLIC_BUILD_ID ?? new Date().toISOString().slice(0, 19);
 ---
 
 <!doctype html>
@@ -23,7 +25,7 @@ const redisToken =
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="css/loads.css" />
+    <link rel="stylesheet" href={`css/loads.css?v=${assetVersion}`} />
   </head>
   <body>
     <canvas id="sky-canvas" aria-hidden="true"></canvas>
@@ -36,7 +38,7 @@ const redisToken =
       <div id="error" role="alert"></div>
       <section id="loads" aria-live="polite" aria-busy="true"></section>
     </main>
-    <script type="module" src="js/sky-background.js"></script>
-    <script type="module" src="js/loads-client.js"></script>
+    <script type="module" src={`js/sky-background.js?v=${assetVersion}`}></script>
+    <script type="module" src={`js/loads-client.js?v=${assetVersion}`}></script>
   </body>
 </html>
