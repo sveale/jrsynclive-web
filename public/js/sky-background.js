@@ -7,7 +7,12 @@ if (canvas) {
     throw new Error("Canvas 2D context not available");
   }
 
+  const animationsToggleEl = document.getElementById("animations-toggle");
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const viewerConfigStorageKey = "bfsk:viewer-config";
+  const defaultViewerConfig = Object.freeze({
+    animationsEnabled: true
+  });
   const colors = ["#f06f9d", "#ff9d3d", "#7a68ff", "#1f9d90", "#f3c846"];
   const jumpTypes = ["freefall", "tracking", "formation", "wingsuit"];
   const freefallPoses = ["headup", "headdown", "sit"];
@@ -28,11 +33,51 @@ if (canvas) {
   let swoopers = [];
   let plane = null;
   let nextSwooperIn = 0;
+  let viewerConfig = { ...defaultViewerConfig };
 
   const random = (min, max) => min + Math.random() * (max - min);
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const randomInt = (min, max) => Math.floor(random(min, max + 1));
   const pickRandom = (items) => items[Math.floor(Math.random() * items.length)];
+  const syncAnimationsToggle = (enabled) => {
+    if (!animationsToggleEl) {
+      return;
+    }
+
+    animationsToggleEl.checked = Boolean(enabled);
+  };
+
+  const readViewerConfig = () => {
+    try {
+      const raw = window.localStorage.getItem(viewerConfigStorageKey);
+      if (!raw) {
+        return { ...defaultViewerConfig };
+      }
+
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") {
+        return { ...defaultViewerConfig };
+      }
+
+      return {
+        ...defaultViewerConfig,
+        animationsEnabled:
+          typeof parsed.animationsEnabled === "boolean"
+            ? parsed.animationsEnabled
+            : defaultViewerConfig.animationsEnabled
+      };
+    } catch {
+      return { ...defaultViewerConfig };
+    }
+  };
+
+  const writeViewerConfig = (nextConfig) => {
+    try {
+      window.localStorage.setItem(viewerConfigStorageKey, JSON.stringify(nextConfig));
+    } catch {
+      // Ignore storage failures (private mode, full quota, denied storage).
+    }
+  };
 
   const roundedRectPath = (x, y, widthValue, heightValue, radius) => {
     const r = Math.min(radius, widthValue * 0.5, heightValue * 0.5);
@@ -1036,8 +1081,17 @@ if (canvas) {
     animationFrame = window.requestAnimationFrame(tick);
   };
 
-  const setAnimationsEnabled = (enabled) => {
+  const setAnimationsEnabled = (enabled, { persist = false } = {}) => {
     animationsEnabled = Boolean(enabled);
+    syncAnimationsToggle(animationsEnabled);
+
+    if (persist) {
+      viewerConfig = {
+        ...viewerConfig,
+        animationsEnabled
+      };
+      writeViewerConfig(viewerConfig);
+    }
 
     if (!animationsEnabled) {
       stop();
@@ -1055,13 +1109,15 @@ if (canvas) {
     start();
   };
 
+  viewerConfig = readViewerConfig();
   resize();
-  setAnimationsEnabled(false);
+  setAnimationsEnabled(viewerConfig.animationsEnabled);
 
-  window.addEventListener("manifest:loads-state", (event) => {
-    const hasLoads = Boolean(event?.detail?.hasLoads);
-    setAnimationsEnabled(hasLoads);
-  });
+  if (animationsToggleEl) {
+    animationsToggleEl.addEventListener("change", () => {
+      setAnimationsEnabled(animationsToggleEl.checked, { persist: true });
+    });
+  }
 
   window.addEventListener("resize", resize, { passive: true });
   prefersReducedMotion.addEventListener("change", (event) => {

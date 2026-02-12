@@ -9,13 +9,6 @@ const errorEl = document.getElementById("error");
 const redisUrl = appEl?.dataset.redisUrl ?? "";
 const redisToken = appEl?.dataset.redisToken ?? "";
 const STATUS_CLASS_NAMES = ["load--in-air", "load--planned", "load--landed"];
-const updateSkyAnimationState = (hasLoads) => {
-  window.dispatchEvent(
-    new CustomEvent("manifest:loads-state", {
-      detail: { hasLoads: Boolean(hasLoads) }
-    })
-  );
-};
 
 const cardState = new Map();
 let lastDataSignature = "";
@@ -295,7 +288,6 @@ const fetchLoads = async () => {
   }
 
   if (!redisUrl || !redisToken) {
-    updateSkyAnimationState(false);
     setError("Mangler konfigurasjon for Upstash URL/token.");
     renderEmpty();
     setBusy(false);
@@ -319,7 +311,6 @@ const fetchLoads = async () => {
     const payload = await response.json();
     const loads = asArray(payload?.result);
 
-    updateSkyAnimationState(loads.length > 0);
     renderLoads(loads);
     setError();
     metaEl.textContent = `Sist oppdatert: ${formatTimestamp(new Date())}`;
@@ -333,7 +324,6 @@ const fetchLoads = async () => {
 };
 
 if (appEl && loadsEl && metaEl && errorEl) {
-  updateSkyAnimationState(false);
   setBusy(true);
   fetchLoads();
   setInterval(fetchLoads, POLL_INTERVAL_MS);

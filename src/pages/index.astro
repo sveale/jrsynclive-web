@@ -38,6 +38,12 @@ const assetVersion =
       <div id="error" role="alert"></div>
       <section id="loads" aria-live="polite" aria-busy="true"></section>
     </main>
+    <div class="display-settings" role="group" aria-label="Visningsinnstillinger">
+      <label class="display-settings-toggle" for="animations-toggle">
+        <input id="animations-toggle" type="checkbox" />
+        <span>Animasjoner</span>
+      </label>
+    </div>
     <script type="module" src={`js/sky-background.js?v=${assetVersion}`}></script>
     <script type="module" src={`js/loads-client.js?v=${assetVersion}`}></script>
   </body>
