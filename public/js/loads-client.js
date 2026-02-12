@@ -1,5 +1,6 @@
 const LOADS_KEY = "loads::all";
-const POLL_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 60_000;
+const EMPTY_POLL_INTERVAL_MS = 10 * 60_000;
 
 const appEl = document.getElementById("app");
 const loadsEl = document.getElementById("loads");
@@ -13,6 +14,7 @@ const STATUS_CLASS_NAMES = ["load--in-air", "load--planned", "load--landed"];
 const cardState = new Map();
 let lastDataSignature = "";
 let showingEmpty = false;
+let pollTimeoutId = null;
 
 const setError = (message = "") => {
   if (!errorEl) {
@@ -283,8 +285,10 @@ const setBusy = (value) => {
 };
 
 const fetchLoads = async () => {
+  setBusy(true);
+
   if (!metaEl) {
-    return;
+    return POLL_INTERVAL_MS;
   }
 
   if (!redisUrl || !redisToken) {
@@ -292,7 +296,7 @@ const fetchLoads = async () => {
     renderEmpty();
     setBusy(false);
     metaEl.textContent = "Konfigurasjon mangler";
-    return;
+    return POLL_INTERVAL_MS;
   }
 
   try {
@@ -314,17 +318,30 @@ const fetchLoads = async () => {
     renderLoads(loads);
     setError();
     metaEl.textContent = `Sist oppdatert: ${formatTimestamp(new Date())}`;
+    return loads.length ? POLL_INTERVAL_MS : EMPTY_POLL_INTERVAL_MS;
   } catch (error) {
     console.error("Klarte ikke hente loads::all", error);
     setError("Kunne ikke hente løft nå. Prøver igjen om 10 sekunder.");
     metaEl.textContent = "Oppdatering feilet";
+    return POLL_INTERVAL_MS;
   } finally {
     setBusy(false);
   }
 };
 
+const scheduleNextPoll = (delayMs) => {
+  if (pollTimeoutId !== null) {
+    window.clearTimeout(pollTimeoutId);
+  }
+
+  pollTimeoutId = window.setTimeout(runPollCycle, delayMs);
+};
+
+const runPollCycle = async () => {
+  const nextDelayMs = await fetchLoads();
+  scheduleNextPoll(nextDelayMs);
+};
+
 if (appEl && loadsEl && metaEl && errorEl) {
-  setBusy(true);
-  fetchLoads();
-  setInterval(fetchLoads, POLL_INTERVAL_MS);
+  runPollCycle();
 }

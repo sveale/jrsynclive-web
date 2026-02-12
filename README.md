@@ -1,6 +1,6 @@
 # HFL Loads Viewer (Static Astro)
 
-This project is a static web app that reads `loads::all` from Upstash Redis and refreshes every 10 seconds in browser-side JavaScript.
+This project is a static web app that reads `loads::all` from Upstash Redis and refreshes every 1 minute in browser-side JavaScript. If `loads::all` is empty, the next check waits 10 minutes.
 
 ## Local setup
 
@@ -39,5 +39,5 @@ GitHub Pages hosting and the workflow are free for public repositories.
 ## Notes
 
 - If `loads::all` is missing or empty, the app shows: `No loads found. Contact HFL.`
-- Data refresh interval is 10 seconds.
+- Data refresh interval is 1 minute when loads exist, and 10 minutes after an empty result.
 - The Upstash token used here is read-only and visible to the browser because this is a fully static app.
