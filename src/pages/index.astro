@@ -1,0 +1,42 @@
+---
+const redisUrl =
+  import.meta.env.PUBLIC_UPSTASH_REDIS_REST_URL ??
+  "https://superb-hound-53409.upstash.io";
+const redisToken =
+  import.meta.env.PUBLIC_UPSTASH_REDIS_REST_TOKEN ??
+  "AtChAAIgcDLqnWMVtD9nt_1H9DZ-SZFzmC5Ttv8QZVnOkZ3HXvWMHQ";
+---
+
+<!doctype html>
+<html lang="nb">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BFSK manifest</title>
+    <meta
+      name="description"
+      content="Direktevisning av BFSK-manifest, oppdatert hvert 10. sekund fra Upstash Redis."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="css/loads.css" />
+  </head>
+  <body>
+    <canvas id="sky-canvas" aria-hidden="true"></canvas>
+    <main id="app" data-redis-url={redisUrl} data-redis-token={redisToken}>
+      <section class="hero">
+        <h1>BFSK manifest</h1>
+        <div class="meta" id="meta">Laster…</div>
+      </section>
+
+      <div id="error" role="alert"></div>
+      <section id="loads" aria-live="polite" aria-busy="true"></section>
+    </main>
+    <script type="module" src="js/sky-background.js"></script>
+    <script type="module" src="js/loads-client.js"></script>
+  </body>
+</html>
